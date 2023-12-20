@@ -1,8 +1,8 @@
-defmodule LangChain.ChatModels.ChatOpenAI do
+defmodule LangChain.ChatModels.ChatAzureOpenAI do
   @moduledoc """
-  Represents the [OpenAI ChatModel](https://platform.openai.com/docs/api-reference/chat/create).
+  Represents the [Azure OpenAI ChatModel](https://learn.microsoft.com/en-us/azure/ai-services/openai/).
 
-  Parses and validates inputs for making a requests from the OpenAI Chat API.
+  Parses and validates inputs for making a requests from the Azure OpenAI Chat API.
 
   Converts responses into more specialized `LangChain` data structures.
 
@@ -29,14 +29,13 @@ defmodule LangChain.ChatModels.ChatOpenAI do
 
   @primary_key false
   embedded_schema do
-    field :endpoint, :string, default: "https://api.openai.com/v1/chat/completions"
-    # field :model, :string, default: "gpt-4"
-    field :model, :string, default: "gpt-3.5-turbo"
+    # endpoint is formatted as follows
+    # https://#{your-resource-name}.openai.azure.com/openai/deployments/#{model-name}/chat/completions?api-version=2023-08-01-preview
+    field :endpoint, :string
     # API key for OpenAI. If not set, will use global api key. Allows for usage
     # of a different API key per-call if desired. For instance, allowing a
     # customer to provide their own.
     field :api_key, :string
-
     # What sampling temperature to use, between 0 and 2. Higher values like 0.8
     # will make the output more random, while lower values like 0.2 will make it
     # more focused and deterministic.
@@ -49,16 +48,12 @@ defmodule LangChain.ChatModels.ChatOpenAI do
     # lengthy response, a longer time limit may be required. However, when it
     # goes on too long by itself, it tends to hallucinate more.
     field :receive_timeout, :integer, default: @receive_timeout
-    # Seed for more deterministic output. Helpful for testing.
-    # https://platform.openai.com/docs/guides/text-generation/reproducible-outputs
-    field :seed, :integer
     # How many chat completion choices to generate for each input message.
     field :n, :integer, default: 1
-    field :json_response, :boolean, default: false
     field :stream, :boolean, default: false
   end
 
-  @type t :: %ChatOpenAI{}
+  @type t :: %ChatAzureOpenAI{}
 
   @type call_response :: {:ok, Message.t() | [Message.t()]} | {:error, String.t()}
   @type callback_data ::
@@ -67,42 +62,34 @@ defmodule LangChain.ChatModels.ChatOpenAI do
 
   @create_fields [
     :endpoint,
-    :model,
     :temperature,
     :frequency_penalty,
     :api_key,
-    :seed,
     :n,
     :stream,
-    :receive_timeout,
-    :json_response
+    :receive_timeout
   ]
-  @required_fields [:endpoint, :model]
+  @required_fields [:endpoint]
 
   @spec get_api_key(t) :: String.t()
-  defp get_api_key(%ChatOpenAI{api_key: api_key}) do
-    # if no API key is set default to `""` which will raise a OpenAI API error
-    api_key || Config.resolve(:openai_key, "")
-  end
-
-  @spec get_org_id() :: String.t() | nil
-  defp get_org_id() do
-    Config.resolve(:openai_org_id)
+  defp get_api_key(%ChatAzureOpenAI{api_key: api_key}) do
+    # if no API key is set default to `""` which will raise an API error
+    api_key || Config.resolve(:azure_openai_key, "")
   end
 
   @doc """
-  Setup a ChatOpenAI client configuration.
+  Setup a ChatAzureOpenAI client configuration.
   """
   @spec new(attrs :: map()) :: {:ok, t} | {:error, Ecto.Changeset.t()}
   def new(%{} = attrs \\ %{}) do
-    %ChatOpenAI{}
+    %ChatAzureOpenAI{}
     |> cast(attrs, @create_fields)
     |> common_validation()
     |> apply_action(:insert)
   end
 
   @doc """
-  Setup a ChatOpenAI client configuration and return it or raise an error if invalid.
+  Setup a ChatAzureOpenAI client configuration and return it or raise an error if invalid.
   """
   @spec new!(attrs :: map()) :: t() | no_return()
   def new!(attrs \\ %{}) do
@@ -128,17 +115,15 @@ defmodule LangChain.ChatModels.ChatOpenAI do
   Return the params formatted for an API request.
   """
   @spec for_api(t, message :: [map()], functions :: [map()]) :: %{atom() => any()}
-  def for_api(%ChatOpenAI{} = openai, messages, functions) do
+  def for_api(%ChatAzureOpenAI{} = openai, messages, functions) do
     %{
-      model: openai.model,
       temperature: openai.temperature,
       frequency_penalty: openai.frequency_penalty,
       n: openai.n,
       stream: openai.stream,
       messages: Enum.map(messages, &ForOpenAIApi.for_api/1),
-      response_format: set_response_format(openai)
+      function_call: "auto"
     }
-    |> Utils.conditionally_add_to_map(:seed, openai.seed)
     |> Utils.conditionally_add_to_map(:functions, get_functions_for_api(functions))
   end
 
@@ -148,14 +133,8 @@ defmodule LangChain.ChatModels.ChatOpenAI do
     Enum.map(functions, &ForOpenAIApi.for_api/1)
   end
 
-  defp set_response_format(%ChatOpenAI{json_response: true}),
-    do: %{"type" => "json_object"}
-
-  defp set_response_format(%ChatOpenAI{json_response: false}),
-    do: %{"type" => "text"}
-
   @doc """
-  Calls the OpenAI API passing the ChatOpenAI struct with configuration, plus
+  Calls the OpenAI API passing the ChatAzureOpenAI struct with configuration, plus
   either a simple message or the list of messages to act as the prompt.
 
   Optionally pass in a list of functions available to the LLM for requesting
@@ -165,7 +144,7 @@ defmodule LangChain.ChatModels.ChatOpenAI do
   received from the API.
 
   **NOTE:** This function *can* be used directly, but the primary interface
-  should be through `LangChain.Chains.LLMChain`. The `ChatOpenAI` module is more focused on
+  should be through `LangChain.Chains.LLMChain`. The `ChatAzureOpenAI` module is more focused on
   translating the `LangChain` data structures to and from the OpenAI API.
 
   Another benefit of using `LangChain.Chains.LLMChain` is that it combines the
@@ -182,7 +161,7 @@ defmodule LangChain.ChatModels.ChatOpenAI do
         ) :: call_response()
   def call(openai, prompt, functions \\ [], callback_fn \\ nil)
 
-  def call(%ChatOpenAI{} = openai, prompt, functions, callback_fn) when is_binary(prompt) do
+  def call(%ChatAzureOpenAI{} = openai, prompt, functions, callback_fn) when is_binary(prompt) do
     messages = [
       Message.new_system!(),
       Message.new_user!(prompt)
@@ -191,7 +170,7 @@ defmodule LangChain.ChatModels.ChatOpenAI do
     call(openai, messages, functions, callback_fn)
   end
 
-  def call(%ChatOpenAI{} = openai, messages, functions, callback_fn) when is_list(messages) do
+  def call(%ChatAzureOpenAI{} = openai, messages, functions, callback_fn) when is_list(messages) do
     if override_api_return?() do
       Logger.warning("Found override API response. Will not make live API call.")
 
@@ -222,7 +201,7 @@ defmodule LangChain.ChatModels.ChatOpenAI do
     end
   end
 
-  # Make the API request from the OpenAI server.
+  # Make the API request from the Azure OpenAI server.
   #
   # The result of the function is:
   #
@@ -243,12 +222,13 @@ defmodule LangChain.ChatModels.ChatOpenAI do
   @doc false
   @spec do_api_request(t(), [Message.t()], [Function.t()], (any() -> any())) ::
           list() | struct() | {:error, String.t()}
-  def do_api_request(%ChatOpenAI{stream: false} = openai, messages, functions, callback_fn) do
+  def do_api_request(%ChatAzureOpenAI{stream: false} = openai, messages, functions, callback_fn) do
+
     req =
       Req.new(
         url: openai.endpoint,
         json: for_api(openai, messages, functions),
-        auth: {:bearer, get_api_key(openai)},
+        headers: [{:api_key, get_api_key(openai)}],
         receive_timeout: openai.receive_timeout,
         retry: :transient,
         max_retries: 3,
@@ -256,7 +236,6 @@ defmodule LangChain.ChatModels.ChatOpenAI do
       )
 
     req
-    |> maybe_add_org_id_header()
     |> Req.post()
     # parse the body and return it as parsed structs
     |> case do
@@ -279,7 +258,12 @@ defmodule LangChain.ChatModels.ChatOpenAI do
     end
   end
 
-  def do_api_request(%ChatOpenAI{stream: true} = openai, messages, functions, callback_fn) do
+  def do_api_request(%ChatAzureOpenAI{stream: true} = openai, messages, functions, callback_fn) do
+
+
+    openai |> IO.inspect(label: "openai bahhhh")
+
+
     finch_fun = fn request, finch_request, finch_name, finch_options ->
       resp_fun = fn
         {:status, status}, response ->
@@ -289,10 +273,43 @@ defmodule LangChain.ChatModels.ChatOpenAI do
           %{response | headers: headers}
 
         {:data, raw_data}, response ->
-          # cleanup data because it isn't structured well for JSON.
-          new_data = decode_streamed_data(raw_data)
-          # execute the callback function for each MessageDelta
-          fire_callback(openai, new_data, callback_fn)
+
+          response |> IO.inspect(label: "bahhhh")
+
+          # JSON strings can be split over multiple responses
+          # we need to buffer the response until we have valid
+          # JSON strings to decode. JSON strings are delimited by two new lines
+          old_buffer = Req.Response.get_private(response, :buffer, "")
+          {items, new_buffer} = next_lines(old_buffer <> raw_data)
+          response = Req.Response.put_private(response, :buffer, new_buffer)
+
+          # we need to ensure that errors do get passed through for handling
+          # by decode_streamed_data
+          # this will happen when the is nothing but an error in the body
+          # this results in an empty items list and the error in the new_buffer
+          items =
+            case response.status do
+              400 -> [new_buffer]
+              _ -> items
+            end
+
+          new_datas =
+            items
+            |> Enum.flat_map(fn raw_item ->
+              # cleanup data because it isn't structured well for JSON.
+              new_data = decode_streamed_data(raw_item)
+
+              Logger.debug("API data item:- #{inspect(new_data)}")
+
+              # execute the callback function for each MessageDelta
+              new_data
+              |> Enum.each(fn data_item ->
+                fire_callback(openai, data_item, callback_fn)
+              end)
+
+              new_data
+            end)
+
           old_body = if response.body == "", do: [], else: response.body
 
           # Returns %Req.Response{} where the body contains ALL the stream delta
@@ -313,7 +330,13 @@ defmodule LangChain.ChatModels.ChatOpenAI do
           #       ]
           #
           # The reason for the inner list is for each entry in the "n" choices. By default only 1.
-          %{response | body: old_body ++ new_data}
+          case new_datas do
+            [[]] ->
+              %{response | body: old_body}
+
+            _ ->
+              %{response | body: old_body ++ new_datas}
+          end
       end
 
       case Finch.stream(finch_request, finch_name, Req.Response.new(), resp_fun, finch_options) do
@@ -333,8 +356,11 @@ defmodule LangChain.ChatModels.ChatOpenAI do
       Req.new(
         url: openai.endpoint,
         json: for_api(openai, messages, functions),
-        auth: {:bearer, get_api_key(openai)},
+        headers: [{:api_key, get_api_key(openai)}],
         receive_timeout: openai.receive_timeout,
+        retry: :transient,
+        max_retries: 3,
+        retry_delay: fn attempt -> 300 * attempt end,
         finch_request: finch_fun
       )
 
@@ -345,7 +371,6 @@ defmodule LangChain.ChatModels.ChatOpenAI do
     # separate process from the UI and the callback function will process the
     # chunks and should notify the UI process of the additional data.
     req
-    |> maybe_add_org_id_header()
     |> Req.post()
     |> case do
       {:ok, %Req.Response{body: data}} ->
@@ -359,9 +384,25 @@ defmodule LangChain.ChatModels.ChatOpenAI do
           "Unhandled and unexpected response from streamed post call. #{inspect(other)}"
         )
 
-        {:error, "Unexpected response"}
+        {:error, "Unexpected response. #{inspect(other)}"}
     end
   end
+
+  # JSON strings are delimited by two new lines
+  # work through the string and break out JSON strings
+  # next_lines implementation is shamelessly inspired/plucked gratefully from
+  # https://github.com/poeticoding/httpstream_articles/blob/36bc2167b7024a990b04b28f9447fb9bc0e0310e/lib/http_stream.ex#L78
+  defp next_lines(chunk, prev \\ ""), do: next_lines(chunk, prev, [])
+
+  defp next_lines(<<"\n\n"::utf8, rest::binary>>, prev, lines) do
+    next_lines(rest, "", [prev <> "\n\n" | lines])
+  end
+
+  defp next_lines(<<c::utf8, rest::binary>>, prev, lines) do
+    next_lines(rest, <<prev::binary, c::utf8>>, lines)
+  end
+
+  defp next_lines(<<>>, prev, lines), do: {Enum.reverse(lines), prev}
 
   defp decode_streamed_data(data) do
     # Data comes back like this:
@@ -417,14 +458,14 @@ defmodule LangChain.ChatModels.ChatOpenAI do
           data :: callback_data() | [callback_data()],
           (callback_data() -> any())
         ) :: :ok
-  defp fire_callback(%ChatOpenAI{stream: true}, _data, nil) do
+  defp fire_callback(%ChatAzureOpenAI{stream: true}, _data, nil) do
     Logger.warning("Streaming call requested but no callback function was given.")
     :ok
   end
 
-  defp fire_callback(%ChatOpenAI{}, _data, nil), do: :ok
+  defp fire_callback(%ChatAzureOpenAI{}, _data, nil), do: :ok
 
-  defp fire_callback(%ChatOpenAI{}, data, callback_fn) when is_function(callback_fn) do
+  defp fire_callback(%ChatAzureOpenAI{}, data, callback_fn) when is_function(callback_fn) do
     # OPTIONAL: Execute callback function
     data
     |> List.flatten()
@@ -570,15 +611,5 @@ defmodule LangChain.ChatModels.ChatOpenAI do
   def do_process_response(other) do
     Logger.error("Trying to process an unexpected response. #{inspect(other)}")
     {:error, "Unexpected response"}
-  end
-
-  defp maybe_add_org_id_header(%Req.Request{} = req) do
-    org_id = get_org_id()
-
-    if org_id do
-      Req.Request.put_header(req, "OpenAI-Organization", org_id)
-    else
-      req
-    end
   end
 end
